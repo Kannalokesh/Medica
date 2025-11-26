@@ -1,0 +1,205 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Medico Chatbot</title>
+
+  <!-- Bootstrap & jQuery (CDN) -->
+  <link href="https://maxcdn.bootstrapcdn.com/bootstrap/4.1.1/css/bootstrap.min.css" rel="stylesheet" id="bootstrap-css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+  <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.1.1/js/bootstrap.min.js"></script>
+
+  <!-- Font Awesome -->
+  <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.5.0/css/all.css" crossorigin="anonymous">
+
+  <!-- Local CSS -->
+  <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='style.css') }}"/>
+</head>
+
+<body>
+  <div class="container-fluid h-100">
+    <div class="row justify-content-center h-100">
+      <div class="col-md-8 col-xl-6 chat">
+        <div class="card">
+          <div class="card-header msg_head">
+            <div class="d-flex bd-highlight">
+              <div class="img_cont">
+                <img src="https://cdn-icons-png.flaticon.com/512/387/387569.png" class="rounded-circle user_img">
+                <span class="online_icon"></span>
+              </div>
+              <div class="user_info">
+                <span>Medica</span>
+                <p>AI Powered Medical Assistant</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Messages area -->
+          <div id="messageArea" class="card-body msg_card_body" aria-live="polite" aria-atomic="true">
+            <!-- messages appended here -->
+          </div>
+
+          <!-- Footer / Input -->
+          <div class="card-footer">
+            <form id="messageForm" class="input-group" autocomplete="off">
+              <input type="text" id="textInput" name="msg" placeholder="Type your message..." class="form-control type_msg" required/>
+              <div class="input-group-append">
+                <button type="submit" id="sendBtn" class="input-group-text send_btn"><i class="fas fa-paper-plane"></i></button>
+              </div>
+            </form>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+$(document).ready(function() {
+  // helper to format time HH:MM
+  function nowTime() {
+    const d = new Date();
+    const hh = String(d.getHours()).padStart(2,'0');
+    const mm = String(d.getMinutes()).padStart(2,'0');
+    return hh + ":" + mm;
+  }
+
+  // scroll chat to bottom
+  function scrollToBottom() {
+    const el = $("#messageArea");
+    el.scrollTop(el.prop("scrollHeight"));
+  }
+
+  // append a user message (right)
+  function appendUserMessage(text) {
+    const t = nowTime();
+    const userHtml = `
+      <div class="d-flex justify-content-end mb-4">
+        <div class="msg_cotainer_send">${escapeHtml(text)}<span class="msg_time_send">${t}</span></div>
+        <div class="img_cont_msg">
+          <img src="https://cdn-icons-png.flaticon.com/512/3177/3177440.png" class="rounded-circle user_img_msg">
+        </div>
+      </div>`;
+    $("#messageArea").append(userHtml);
+    scrollToBottom();
+  }
+
+  // show a temporary typing indicator
+  function showTyping() {
+    $("#messageArea").append('<div id="typingIndicator" class="d-flex justify-content-start mb-4"><div class="img_cont_msg"><img src="https://cdn-icons-png.flaticon.com/512/387/387569.png" class="rounded-circle user_img_msg"></div><div class="msg_cotainer typing">Thinking...</div></div>');
+    scrollToBottom();
+  }
+  function hideTyping() { $("#typingIndicator").remove(); }
+
+  // HTML escape to avoid injection
+  function escapeHtml(text) {
+    if (!text && text !== 0) return "";
+    return String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  // Render structured bot response (expects object)
+  function appendBotMessageStructured(responseObj) {
+    const t = nowTime();
+
+    // If server returns plain 'answer' string, fallback to simple bubble
+    if (!responseObj || typeof responseObj === 'string') {
+      const answerText = responseObj || "No response";
+      const html = `<div class="d-flex justify-content-start mb-4"><div class="img_cont_msg"><img src="https://cdn-icons-png.flaticon.com/512/387/387569.png" class="rounded-circle user_img_msg"></div><div class="msg_cotainer">${escapeHtml(answerText)}<span class="msg_time">${t}</span></div></div>`;
+      $("#messageArea").append($.parseHTML(html));
+      scrollToBottom();
+      return;
+    }
+
+    const summary = responseObj.summary || responseObj.answer || "";
+    const keyFacts = responseObj.key_facts || responseObj.keyFacts || [];
+    const supporting = responseObj.supporting_details || responseObj.supportingDetails || [];
+    const disclaimer = responseObj.disclaimer || "This is informational only — consult a licensed clinician for personalized advice.";
+    const sources = responseObj.sources || [];
+
+    // build HTML
+    let factsHtml = "";
+    if (keyFacts.length > 0) {
+      factsHtml = "<div class='answer-section'><h6>Key facts</h6><ul class='answer-list'>";
+      for (const f of keyFacts) factsHtml += `<li>${escapeHtml(f)}</li>`;
+      factsHtml += "</ul></div>";
+    }
+
+    let supHtml = "";
+    if (supporting.length > 0) {
+      supHtml = "<div class='answer-section'><h6>Supporting details</h6><ol class='answer-list'>";
+      for (const d of supporting) supHtml += `<li>${escapeHtml(d)}</li>`;
+      supHtml += "</ol></div>";
+    }
+
+    let sourcesHtml = "";
+    if (sources.length > 0) {
+      sourcesHtml = '<details class="answer-sources"><summary>Sources</summary><ul>';
+      for (const s of sources) {
+        const filePath = s.source || s.file || "data/book.pdf";
+        const chunk = (s.chunk !== undefined) ? ` (chunk ${s.chunk})` : "";
+        const score = s.score || s.distance || s.similarity;
+        const scoreText = (score !== undefined) ? ` — score: ${Number(score).toFixed(3)}` : "";
+        sourcesHtml += `<li><a href="${filePath}" target="_blank" rel="noopener">${escapeHtml(filePath)}</a>${escapeHtml(chunk)}${escapeHtml(scoreText)}</li>`;
+      }
+      sourcesHtml += '</ul></details>';
+    }
+
+    const topHtml = `
+      <div class="d-flex justify-content-start mb-4">
+        <div class="img_cont_msg">
+          <img src="https://cdn-icons-png.flaticon.com/512/387/387569.png" class="rounded-circle user_img_msg">
+        </div>
+        <div class="msg_cotainer">
+          <div class="answer-header-small"><strong>${escapeHtml(summary)}</strong></div>
+          ${factsHtml}
+          ${supHtml}
+          <div class="answer-disclaimer"><strong>Disclaimer:</strong> ${escapeHtml(disclaimer)}</div>
+          ${sourcesHtml}
+          <span class="msg_time">${t}</span>
+        </div>
+      </div>
+    `;
+    $("#messageArea").append($.parseHTML(topHtml));
+    scrollToBottom();
+  }
+
+  // form submit
+  $("#messageForm").on("submit", function(event) {
+    event.preventDefault();
+    const rawText = $("#textInput").val().trim();
+    if (!rawText) return;
+
+    appendUserMessage(rawText);
+    $("#textInput").val("");
+
+    showTyping();
+
+    fetch("/chat", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ query: rawText, top_k: 5 })
+    }).then(async (res) => {
+      hideTyping();
+      if (!res.ok) {
+        const err = await res.json().catch(()=>({error: "unknown"}));
+        appendBotMessageStructured({ summary: "Sorry, an error occurred.", key_facts: [err.details || err.error || JSON.stringify(err)] });
+        return;
+      }
+      const j = await res.json();
+      // The server will return structured JSON (preferred). If not, it returns answer + sources.
+      appendBotMessageStructured(j);
+    }).catch((err) => {
+      hideTyping();
+      appendBotMessageStructured({ summary: "Network error", key_facts: [err.message] });
+    });
+  });
+});
+</script>
+
+</body>
+</html>

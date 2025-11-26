@@ -1,0 +1,141 @@
+/* static/style.css - styles for the chat UI */
+html,body{
+    height:100%;
+    background:#f2f2f2;
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+}
+.chat{
+    margin-top:50px;
+    margin-bottom:50px;
+}
+.card {
+    height: 80vh;
+    border-radius: 15px;
+    background: #fff;
+}
+.msg_head{
+    background: linear-gradient(135deg,#3f8efc,#00c6ff);
+    color: #fff;
+    padding: 15px;
+    border-top-left-radius: 15px;
+    border-top-right-radius: 15px;
+}
+.img_cont{
+    position: relative;
+    width: 50px;
+    margin-right:10px;
+}
+.user_img{
+    width:50px;
+    height:50px;
+}
+.online_icon{
+    position:absolute;
+    bottom:0;
+    right:0;
+    background:#2ecc71;
+    width:12px;
+    height:12px;
+    border-radius:50%;
+    border:2px solid #fff;
+}
+.user_info span{
+    font-weight:600;
+    font-size:1.05rem;
+}
+.user_info p{
+    margin:0;
+    font-size:0.85rem;
+    opacity:0.9;
+}
+
+/* messages area */
+.msg_card_body{
+    overflow-y: auto;
+    padding: 20px;
+    height: calc(80vh - 160px);
+    background: #f7f7f7;
+}
+.msg_cotainer{
+    margin-top:3px;
+    margin-bottom:3px;
+    padding: 10px 15px;
+    background: #fff;
+    border-radius: 10px;
+    position: relative;
+    box-shadow: 0 1px 1px rgba(0,0,0,0.05);
+    max-width: 75%;
+}
+.msg_cotainer_send{
+    margin-top:3px;
+    margin-bottom:3px;
+    padding: 10px 15px;
+    background: linear-gradient(135deg,#3f8efc,#00c6ff);
+    color: #fff;
+    border-radius: 10px;
+    position: relative;
+    max-width: 75%;
+    box-shadow: 0 1px 1px rgba(0,0,0,0.05);
+}
+.msg_time{
+    display:block;
+    font-size:10px;
+    margin-top:8px;
+    color:#999;
+}
+.msg_time_send{
+    display:block;
+    font-size:10px;
+    margin-top:8px;
+    color:#e6f0ff;
+    text-align:right;
+}
+.img_cont_msg{
+    height:40px;
+    width:40px;
+    overflow:hidden;
+    margin-right:10px;
+}
+.user_img_msg{
+    height:40px;
+    width:40px;
+    border-radius:50%;
+}
+
+/* footer */
+.card-footer{
+    padding: 10px 15px;
+    border-bottom-left-radius: 15px;
+    border-bottom-right-radius: 15px;
+    background:#fff;
+}
+.input-group .type_msg{
+    border:0;
+    box-shadow:none;
+}
+.send_btn{
+    background: linear-gradient(135deg,#3f8efc,#00c6ff);
+    color:#fff;
+    border:0;
+    cursor:pointer;
+}
+.send_btn:focus { outline: none; box-shadow: none; }
+.typing{
+    font-style: italic;
+    opacity: 0.8;
+}
+
+/* structured answer styles */
+.answer-header-small { font-size: 1rem; margin-bottom: 6px; color:#07387a; }
+.answer-disclaimer { margin-top:8px; font-size:0.9rem; color:#8a0000; }
+.answer-sources summary { cursor: pointer; font-weight:600; margin-bottom:6px; }
+.answer-sources ul{ margin:8px 0 0 18px; }
+.answer-section h6 { margin:6px 0; font-size:0.95rem; color:#123a6b; }
+.answer-list { padding-left: 18px; margin:6px 0 0 0; }
+.answer-list li { margin-bottom:6px; }
+
+/* responsive adjustments */
+@media (max-width: 767px) {
+    .card { height: 85vh; }
+    .msg_cotainer, .msg_cotainer_send { max-width: 85%; }
+}

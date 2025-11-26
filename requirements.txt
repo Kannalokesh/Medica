@@ -1,0 +1,9 @@
+flask
+google-genai
+chromadb>=0.5.0
+PyPDF2
+python-dotenv
+flask-limiter
+gunicorn
+sentence-transformers
+google-cloud-aiplatform
