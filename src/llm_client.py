@@ -1,22 +1,72 @@
-# src/llm_client.py
-from dotenv import load_dotenv
-load_dotenv()
+#src/llm_client.py
 
 import os
 from typing import List
-from google import genai
+from threading import Lock
+from dotenv import load_dotenv
+load_dotenv()
 
-# Generation client (Gemini)
-API_KEY_ENV = os.environ.get("GEMINI_API_KEY") 
-_client = genai.Client(api_key=API_KEY_ENV) if API_KEY_ENV else genai.Client()
+# Support both names for convenience (GENAI_API_KEY or GEMINI_API_KEY)
+_API_KEY = os.environ.get("GEMINI_API_KEY")
+_USE_VERTEX = os.environ.get("USE_VERTEXAI") in ("1", "true", "True")
+_VERTEX_PROJECT = os.environ.get("VERTEXAI_PROJECT")
+_VERTEX_LOCATION = os.environ.get("VERTEXAI_LOCATION")
+
+_client = None
+_client_lock = Lock()
+
+def _init_genai_client():
+    """
+    Lazy initialize google.genai.Client only when first needed.
+    This avoids heavy import/initialization during module import.
+    """
+    global _client
+    if _client is not None:
+        return
+
+    with _client_lock:
+        if _client is not None:
+            return
+
+        # Import inside function to avoid import-time overhead
+        try:
+            import google.genai as genai
+        except Exception as e:
+            raise RuntimeError(f"Missing dependency google-genai or failed to import: {e}")
+
+        if _API_KEY:
+            _client = genai.Client(api_key=_API_KEY)
+            return
+
+        if _USE_VERTEX:
+            if not (_VERTEX_PROJECT and _VERTEX_LOCATION):
+                raise ValueError(
+                    "Vertex AI mode requires VERTEXAI_PROJECT and VERTEXAI_LOCATION environment variables."
+                )
+            # Ensure GOOGLE_APPLICATION_CREDENTIALS is set to point to service account JSON
+            # (Render: /etc/secrets/service-account.json if you uploaded it as Secret File)
+            _client = genai.Client(vertexai=True, project=_VERTEX_PROJECT, location=_VERTEX_LOCATION)
+            return
+
+        raise ValueError(
+            "No genai credentials provided. Set GENAI_API_KEY or GEMINI_API_KEY for Google AI API, "
+            "or set USE_VERTEXAI=1 and VERTEXAI_PROJECT & VERTEXAI_LOCATION for Vertex AI mode."
+        )
+
+def _get_client():
+    if _client is None:
+        _init_genai_client()
+    return _client
 
 def generate_text(system_prompt: str, user_prompt: str, model: str = "gemini-2.5-flash", max_output_tokens: int = 512) -> str:
     """
     Use Gemini to generate a response. We supply a system prompt and a user prompt.
     """
+    client = _get_client()
+    # Keep try/except shapes from your original code but use the lazy client
     try:
         # Try models.generate_content (common in examples)
-        resp = _client.models.generate_content(model=model, contents=f"{system_prompt}\n\n{user_prompt}")
+        resp = client.models.generate_content(model=model, contents=f"{system_prompt}\n\n{user_prompt}")
         if hasattr(resp, "text") and resp.text:
             return resp.text
         # fallback nested path
@@ -27,7 +77,7 @@ def generate_text(system_prompt: str, user_prompt: str, model: str = "gemini-2.5
     except Exception:
         # Fallback to responses.generate if available
         try:
-            resp = _client.responses.generate(
+            resp = client.responses.generate(
                 model=model,
                 input=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                 max_output_tokens=max_output_tokens
@@ -51,25 +101,31 @@ def generate_text(system_prompt: str, user_prompt: str, model: str = "gemini-2.5
 # -------------------------
 # Embeddings: sentence-transformers (local)
 # -------------------------
-# We use a lightweight, fast model for local embeddings:
-#   - all-MiniLM-L6-v2  (384 dims)
-# It avoids cloud billing and works offline.
-
-try:
-    from sentence_transformers import SentenceTransformer
-    import numpy as np
-except Exception as e:
-    raise RuntimeError("Missing dependency: install sentence-transformers (and its dependencies). "
-                       "Run: pip install sentence-transformers") from e
-
-# instantiate model once
-# default model: all-MiniLM-L6-v2 (good for RAG prototyping)
+# Lazy-load SentenceTransformer to avoid heavy memory at import time.
 _S2T_MODEL_NAME = os.environ.get("LOCAL_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-try:
-    _S2T_MODEL = SentenceTransformer(_S2T_MODEL_NAME)
-except Exception as e:
-    # Give a clear error that model download may be required
-    raise RuntimeError(f"Failed to load SentenceTransformer model '{_S2T_MODEL_NAME}': {e}")
+_s2t_model = None
+_s2t_lock = Lock()
+
+def _ensure_s2t_model():
+    global _s2t_model
+    if _s2t_model is not None:
+        return
+    with _s2t_lock:
+        if _s2t_model is not None:
+            return
+        try:
+            from sentence_transformers import SentenceTransformer
+            import numpy as np  # keep available for dtype conversions
+        except Exception as e:
+            raise RuntimeError(
+                "Missing dependency: install sentence-transformers (and its dependencies). "
+                "Run: pip install sentence-transformers"
+            ) from e
+
+        try:
+            _s2t_model = SentenceTransformer(_S2T_MODEL_NAME)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load SentenceTransformer model '{_S2T_MODEL_NAME}': {e}")
 
 def get_embeddings(texts: List[str]) -> List[List[float]]:
     """
@@ -84,18 +140,20 @@ def get_embeddings(texts: List[str]) -> List[List[float]]:
     if not isinstance(texts, list):
         texts = list(texts)
 
+    _ensure_s2t_model()
+
     # encode -> numpy array (num_texts x dim)
     try:
-        vectors = _S2T_MODEL.encode(texts, convert_to_numpy=True, show_progress_bar=False)
+        vectors = _s2t_model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
     except TypeError:
         # older versions may not have convert_to_numpy flag
-        vectors = _S2T_MODEL.encode(texts, show_progress_bar=False)
+        vectors = _s2t_model.encode(texts, show_progress_bar=False)
+        import numpy as np
         vectors = np.array(vectors)
 
     # convert to python lists for storage/Chroma consumption
     out = []
     for vec in vectors:
-        # ensure floats are native python floats
         out.append([float(x) for x in vec.tolist()])
 
     return out

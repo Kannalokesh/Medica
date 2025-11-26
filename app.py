@@ -1,20 +1,52 @@
-# app.py
 from dotenv import load_dotenv
 load_dotenv()
 
-import os, json
+import os
+import json
 from flask import Flask, request, jsonify, render_template
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from threading import Lock
 
+# Keep imports for our local modules (these modules themselves lazy-init heavy resources)
 from src.llm_client import generate_text, get_embeddings
 from src.cache import Cache
 from src.prompt import build_system_prompt, render_user_prompt
-from chromadb import Client, PersistentClient
+
+# NOTE: chromadb imports/clients can be heavy. We'll lazy-init the client below.
+_CHROMA_LOCK = Lock()
+_chroma_collection = None
+
+def get_chroma_collection():
+    """
+    Lazily initialize and return a Chroma collection.
+    This avoids heavy startup memory usage at import time.
+    """
+    global _chroma_collection
+    if _chroma_collection is not None:
+        return _chroma_collection
+
+    with _CHROMA_LOCK:
+        if _chroma_collection is not None:
+            return _chroma_collection
+
+        # import here to avoid import-time overhead
+        try:
+            from chromadb import Client, PersistentClient
+        except Exception as e:
+            raise RuntimeError(f"Failed importing chromadb: {e}")
+
+        CHROMA_DIR = os.environ.get("CHROMA_PERSIST_DIR")  # optional
+        CHROMA_COLLECTION = os.environ.get("CHROMA_COLLECTION", "medico_docs")
+
+        if CHROMA_DIR:
+            client = PersistentClient(path=CHROMA_DIR)
+        else:
+            client = Client()
+        _chroma_collection = client.get_or_create_collection(name=CHROMA_COLLECTION)
+        return _chroma_collection
 
 # Config
-CHROMA_DIR = os.environ.get("CHROMA_PERSIST_DIR")  # optional
-CHROMA_COLLECTION = os.environ.get("CHROMA_COLLECTION", "medico_docs")
 RATE_LIMIT = os.environ.get("RATE_LIMIT", "20 per minute")  # default rate
 EMBED_CACHE_TTL = int(os.environ.get("EMBED_CACHE_TTL", 60 * 60 * 24))
 
@@ -24,14 +56,7 @@ app = Flask(__name__, template_folder="templates")
 limiter = Limiter(key_func=get_remote_address, default_limits=[RATE_LIMIT])
 limiter.init_app(app)
 
-# Chroma client
-if CHROMA_DIR:
-    client = PersistentClient(path=CHROMA_DIR)
-else:
-    client = Client()
-collection = client.get_or_create_collection(name=CHROMA_COLLECTION)
-
-# Cache
+# Cache (likely lightweight)
 cache = Cache(db_path=os.environ.get("CACHE_DB", "./medico_cache.sqlite3"))
 
 @app.route("/", methods=["GET"])
@@ -60,8 +85,9 @@ def chat():
         except Exception as e:
             return jsonify({"error": "embedding_error", "details": str(e)}), 500
 
-    # 2) Query Chroma
+    # 2) Query Chroma (lazy-init)
     try:
+        collection = get_chroma_collection()
         results = collection.query(query_embeddings=[emb], n_results=top_k, include=["documents","metadatas","distances"])
     except Exception as e:
         return jsonify({"error": "chroma_query_error", "details": str(e)}), 500
@@ -117,32 +143,26 @@ def chat():
     if structured is None:
         # Heuristic: summary = first paragraph or first sentence
         raw_text = raw.strip()
-        # split paragraphs
         paras = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
         summary = ""
         if paras:
-            # use first paragraph up to first 2 sentences
             import re
             sentences = re.split(r'(?<=[.!?])\s+', paras[0])
             summary = " ".join(sentences[:2]).strip()
         else:
-            # fallback: first 200 chars
             summary = raw_text[:200] + ("..." if len(raw_text) > 200 else "")
 
-        # try to extract bullets from raw text (lines starting with -, *, or digits)
         lines = raw_text.splitlines()
         key_facts = []
         supporting = []
         for ln in lines:
             l = ln.strip()
             if not l: continue
-            if l.startswith("-") or l.startswith("*") or l[0].isdigit():
-                # treat as a fact/support depending on count
+            if l.startswith("-") or l.startswith("*") or l and l[0].isdigit():
                 if len(key_facts) < 3:
                     key_facts.append(l.lstrip("-*0123456789. ").strip())
                 else:
                     supporting.append(l.lstrip("-*0123456789. ").strip())
-        # if no bullets, create some simple key facts from first sentences of subsequent paragraphs
         if not key_facts:
             for p in paras[1:3]:
                 s = p.split(". ")
@@ -181,4 +201,5 @@ def chat():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
+    # For local dev only; in production Gunicorn will be used
     app.run(host="0.0.0.0", port=port, debug=debug)
