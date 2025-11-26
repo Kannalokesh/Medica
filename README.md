@@ -4,7 +4,7 @@
 ## Overview
 Medica is a medical QA assistant:
 - Generation: Google Gemini (`gemini-2.5-flash`)
-- Embeddings: `gemini-embedding-001`
+- Embeddings: `sentence-transformers`
 - Vector DB: ChromaDB
 - Web: Flask
 - Caching: SQLite (simple TTL)
