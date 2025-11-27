@@ -24,61 +24,43 @@ app = Flask(__name__, template_folder="templates")
 limiter = Limiter(key_func=get_remote_address, default_limits=[RATE_LIMIT])
 limiter.init_app(app)
 
-# --------------------------------------------------
-# TEMP DEBUG ENDPOINT (REMOVE AFTER DEBUGGING)
-# --------------------------------------------------
+
+# TEMP lightweight debug endpoint (safer)
 @app.route("/_debug_check", methods=["GET"])
 def debug_check():
+    """
+    Lightweight diagnostics: only checks presence of env vars and secret files.
+    DOES NOT initialize models or clients to avoid OOM/timeouts.
+    """
     out = {"ok": True, "checks": {}}
-
-    # 1) Environment variables (non-secret)
     try:
-        out["checks"]["GENAI_API_KEY_present"] = bool(os.environ.get("GENAI_API_KEY"))
+        out["checks"]["GENAI_API_KEY_present"] = bool(os.environ.get("GENAI_API_KEY") or os.environ.get("GEMINI_API_KEY"))
         out["checks"]["GEMINI_API_KEY_present"] = bool(os.environ.get("GEMINI_API_KEY"))
         out["checks"]["USE_VERTEXAI"] = os.environ.get("USE_VERTEXAI")
         out["checks"]["VERTEXAI_PROJECT_present"] = bool(os.environ.get("VERTEXAI_PROJECT"))
         out["checks"]["VERTEXAI_LOCATION_present"] = bool(os.environ.get("VERTEXAI_LOCATION"))
         out["checks"]["GOOGLE_APPLICATION_CREDENTIALS"] = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
 
-        # list secret files
+        # list secret files if present
         try:
             if os.path.exists("/etc/secrets"):
-                out["checks"]["secrets_list"] = os.listdir("/etc/secrets")
+                out["checks"]["secrets_list"] = sorted(os.listdir("/etc/secrets"))
             else:
                 out["checks"]["secrets_list"] = []
         except Exception as e:
             out["checks"]["secrets_list_error"] = str(e)
-
-    except Exception:
+    except Exception as e:
+        import traceback
         out["checks"]["env_error"] = traceback.format_exc()
 
-    # 2) sentence-transformers model check
-    try:
-        from src.llm_client import _ensure_s2t_model
-        try:
-            _ensure_s2t_model()
-            out["checks"]["s2t_model"] = "ok"
-        except Exception as e:
-            out["checks"]["s2t_model_error"] = str(e)
-            out["checks"]["s2t_model_trace"] = traceback.format_exc()
-    except Exception as e:
-        out["checks"]["s2t_import_error"] = str(e)
-        out["checks"]["s2t_import_trace"] = traceback.format_exc()
-
-    # 3) genai client init check
-    try:
-        from src import llm_client
-        try:
-            llm_client._init_genai_client()
-            out["checks"]["genai_init"] = "ok"
-        except Exception as e:
-            out["checks"]["genai_init_error"] = str(e)
-            out["checks"]["genai_init_trace"] = traceback.format_exc()
-    except Exception as e:
-        out["checks"]["genai_module_error"] = str(e)
-        out["checks"]["genai_module_trace"] = traceback.format_exc()
+    # NOTE: intentionally do NOT call _ensure_s2t_model() or _init_genai_client() here.
+    out["checks"]["note"] = (
+        "This is a lightweight check. To test embeddings/genai initialization, run locally "
+        "or use a larger instance / Render Shell."
+    )
 
     return jsonify(out)
+
 # --------------------------------------------------
 
 
