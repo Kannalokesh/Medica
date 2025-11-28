@@ -157,41 +157,36 @@ def _parse_embedding_response(resp):
 
 def get_embeddings(texts: List[str]) -> List[List[float]]:
     """
-    Return embeddings for a list of texts by calling Gemini embeddings via google.genai.
-    - Requires GENAI_EMBEDDING_MODEL env var to be set (example: 'textembedding-gecko-001' or provider equivalent).
-    - Returns list of lists (vectors).
+    Get embeddings from Google Gemini (google-genai).
+    Compatible with all versions of google-genai.
+    Uses text-embedding-004 by default.
     """
     if texts is None:
         return []
+
     if isinstance(texts, str):
         texts = [texts]
-    if not isinstance(texts, list):
-        texts = list(texts)
 
-    if not _EMBED_MODEL:
-        raise RuntimeError(
-            "GENAI_EMBEDDING_MODEL is not set. Set environment variable GENAI_EMBEDDING_MODEL "
-            "to the embedding model name you want to use (e.g. 'textembedding-gecko-001' or provider-specific name)."
-        )
+    model = os.environ.get("GENAI_EMBEDDING_MODEL", "text-embedding-004")
 
-    client = _get_client()
-
-    # call the embeddings endpoint (try common method names)
     try:
-        # Preferred modern shape
-        if hasattr(client, "embeddings") and hasattr(client.embeddings, "create"):
-            resp = client.embeddings.create(model=_EMBED_MODEL, input=texts)
-            return _parse_embedding_response(resp)
-        # fallback older shape
-        if hasattr(client, "models") and hasattr(client.models, "embed"):
-            resp = client.models.embed(model=_EMBED_MODEL, input=texts)
-            return _parse_embedding_response(resp)
-        # last resort: try client.responses.embed or client.embed
-        if hasattr(client, "embed"):
-            resp = client.embed(model=_EMBED_MODEL, input=texts)
-            return _parse_embedding_response(resp)
+        # universal embed endpoint
+        response = _client.embed_content(
+            model=model,
+            contents=texts
+        )
     except Exception as e:
-        # bubble a helpful error
-        raise RuntimeError(f"Failed to obtain embeddings from genai client: {e}") from e
+        raise RuntimeError(f"Gemini embedding failed: {e}")
 
-    raise RuntimeError("No supported embeddings API found on genai client. Please check the client version.")
+    # google-genai returns:
+    # response.embeddings[i].values -> list of floats
+    out = []
+
+    # supports both batch + single embedding outputs
+    if hasattr(response, "embeddings"):
+        for emb in response.embeddings:
+            out.append(list(emb.values))
+    else:
+        raise RuntimeError("Invalid embedding response structure from Gemini")
+
+    return out
