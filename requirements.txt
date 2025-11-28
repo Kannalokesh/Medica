@@ -5,5 +5,4 @@ PyPDF2
 python-dotenv
 flask-limiter
 gunicorn
-sentence-transformers
 google-cloud-aiplatform

@@ -6,19 +6,20 @@ from typing import List
 from threading import Lock
 
 # --------
-# Configuration (Gemini API key)
+# Configuration (Gemini API key + embedding model)
 # --------
-# Accept either GENAI_API_KEY or GEMINI_API_KEY (backwards compatibility)
-_API_KEY = os.environ.get("GENAI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+_API_KEY =  os.environ.get("GEMINI_API_KEY")
+# Set this in Render env. Example names vary by provider/version. Required.
 
-# Client container and lock for lazy init
+_EMBED_MODEL = os.environ.get("GENAI_EMBEDDING_MODEL", "text-embedding-004")
+
 _client = None
 _client_lock = Lock()
 
 def _init_genai_client():
     """
-    Lazy-initialize google.genai client using API key (Gemini / Google AI API path).
-    Raises a clear error if API key is not provided.
+    Lazy-init google.genai client using API key only (Gemini / Google AI API path).
+    Raises clear error if API key is missing.
     """
     global _client
     if _client is not None:
@@ -36,13 +37,12 @@ def _init_genai_client():
         try:
             import google.genai as genai
         except Exception as e:
-            # Provide helpful message if dependency missing
             raise RuntimeError(
-                "Failed to import google.genai. Is google-genai installed in your environment?"
+                "Failed to import google.genai. Ensure google-genai is installed in your environment."
             ) from e
 
-        # Create the client using API key ONLY (no Vertex / GCP path)
         try:
+            # Always initialize the client with api_key (force non-Vertex path)
             _client = genai.Client(api_key=_API_KEY)
         except Exception as e:
             raise RuntimeError(f"Failed to initialize genai.Client with provided API key: {e}") from e
@@ -53,36 +53,32 @@ def _get_client():
     return _client
 
 # --------
-# Text generation
+# Text generation 
 # --------
 def generate_text(system_prompt: str, user_prompt: str, model: str = "gemini-2.5-flash", max_output_tokens: int = 512) -> str:
     """
-    Generate text from Gemini (Google genai). Uses lazy client initialization.
-    Returns the string output (best-effort).
+    Generate text from Gemini (google.genai). Returns a text string.
     """
     client = _get_client()
 
-    # Try common modern API shapes: models.generate_content, then client.responses.generate
     try:
-        # Some genai versions expose models.generate_content
+        # prefer models.generate_content if present
         resp = client.models.generate_content(model=model, contents=f"{system_prompt}\n\n{user_prompt}")
-        # Common shapes:
         if hasattr(resp, "text") and resp.text:
             return resp.text
-        # older/nested shapes
         try:
             return resp.candidates[0].content.parts[0].text
         except Exception:
             return str(resp)
     except Exception:
-        # Fallback to responses.generate shape
+        # fallback to responses.generate
         try:
             resp = client.responses.generate(
                 model=model,
                 input=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                 max_output_tokens=max_output_tokens
             )
-            # Try to assemble text from common response shapes
+            # assemble textual output from common shapes
             if hasattr(resp, "output") and getattr(resp.output, "content", None):
                 out = ""
                 for item in resp.output.content:
@@ -99,43 +95,70 @@ def generate_text(system_prompt: str, user_prompt: str, model: str = "gemini-2.5
             raise RuntimeError(f"Failed to call Gemini generation: {e}") from e
 
 # -------------------------
-# Embeddings: local sentence-transformers (lazy)
+# Embeddings: remote via genai (Gemini)
 # -------------------------
-_S2T_MODEL_NAME = os.environ.get("LOCAL_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-_s2t_model = None
-_s2t_lock = Lock()
-
-def _ensure_s2t_model():
+def _parse_embedding_response(resp):
     """
-    Lazy-load the sentence-transformers model to avoid heavy startup memory usage.
-    Raises clear errors if dependency or download fails.
+    Parse common genai embedding response shapes into a list of vectors.
+    Returns list[list[float]] or raises ValueError if unable to parse.
     """
-    global _s2t_model
-    if _s2t_model is not None:
-        return
+    # Common recent shape: resp.data -> list of {embedding: [...]}
+    try:
+        # try attribute-style
+        data = getattr(resp, "data", None)
+        if data:
+            out = []
+            for item in data:
+                # item might be a dict-like or object with .embedding
+                if isinstance(item, dict) and "embedding" in item:
+                    out.append([float(x) for x in item["embedding"]])
+                elif hasattr(item, "embedding"):
+                    emb = getattr(item, "embedding")
+                    out.append([float(x) for x in list(emb)])
+                elif isinstance(item, (list, tuple)):
+                    # fallback: item might be vector itself
+                    out.append([float(x) for x in item])
+                else:
+                    # try item["embedding"] if dict-like
+                    try:
+                        emb = item["embedding"]  # may raise
+                        out.append([float(x) for x in emb])
+                    except Exception:
+                        raise
+            if out:
+                return out
+    except Exception:
+        pass
 
-    with _s2t_lock:
-        if _s2t_model is not None:
-            return
+    # Older / alternative shapes: resp["data"] or resp[0]["embedding"]
+    try:
+        # dict-like access
+        if isinstance(resp, dict) and "data" in resp:
+            out = []
+            for item in resp["data"]:
+                if isinstance(item, dict) and "embedding" in item:
+                    out.append([float(x) for x in item["embedding"]])
+            if out:
+                return out
+    except Exception:
+        pass
 
-        try:
-            from sentence_transformers import SentenceTransformer
-            import numpy as np  # for handling older API branches
-        except Exception as e:
-            raise RuntimeError(
-                "Missing dependency: sentence-transformers (and its dependencies). "
-                "Install with: pip install sentence-transformers"
-            ) from e
+    # Last-resort: resp itself is a single vector or list of vectors
+    try:
+        if isinstance(resp, (list, tuple)):
+            # list of vectors
+            first = resp[0]
+            if isinstance(first, (list, tuple)):
+                return [[float(x) for x in vec] for vec in resp]
+    except Exception:
+        pass
 
-        try:
-            _s2t_model = SentenceTransformer(_S2T_MODEL_NAME)
-        except Exception as e:
-            raise RuntimeError(f"Failed to load SentenceTransformer model '{_S2T_MODEL_NAME}': {e}") from e
+    raise ValueError("Unable to parse embedding response shape from genai client: " + str(type(resp)))
 
 def get_embeddings(texts: List[str]) -> List[List[float]]:
     """
-    Return embeddings for a list of texts using sentence-transformers.
-    - Accepts a single string or list[str].
+    Return embeddings for a list of texts by calling Gemini embeddings via google.genai.
+    - Requires GENAI_EMBEDDING_MODEL env var to be set (example: 'textembedding-gecko-001' or provider equivalent).
     - Returns list of lists (vectors).
     """
     if texts is None:
@@ -145,18 +168,30 @@ def get_embeddings(texts: List[str]) -> List[List[float]]:
     if not isinstance(texts, list):
         texts = list(texts)
 
-    _ensure_s2t_model()
+    if not _EMBED_MODEL:
+        raise RuntimeError(
+            "GENAI_EMBEDDING_MODEL is not set. Set environment variable GENAI_EMBEDDING_MODEL "
+            "to the embedding model name you want to use (e.g. 'textembedding-gecko-001' or provider-specific name)."
+        )
 
+    client = _get_client()
+
+    # call the embeddings endpoint (try common method names)
     try:
-        vectors = _s2t_model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
-    except TypeError:
-        # older versions may not support convert_to_numpy
-        vectors = _s2t_model.encode(texts, show_progress_bar=False)
-        import numpy as np
-        vectors = np.array(vectors)
+        # Preferred modern shape
+        if hasattr(client, "embeddings") and hasattr(client.embeddings, "create"):
+            resp = client.embeddings.create(model=_EMBED_MODEL, input=texts)
+            return _parse_embedding_response(resp)
+        # fallback older shape
+        if hasattr(client, "models") and hasattr(client.models, "embed"):
+            resp = client.models.embed(model=_EMBED_MODEL, input=texts)
+            return _parse_embedding_response(resp)
+        # last resort: try client.responses.embed or client.embed
+        if hasattr(client, "embed"):
+            resp = client.embed(model=_EMBED_MODEL, input=texts)
+            return _parse_embedding_response(resp)
+    except Exception as e:
+        # bubble a helpful error
+        raise RuntimeError(f"Failed to obtain embeddings from genai client: {e}") from e
 
-    out = []
-    for vec in vectors:
-        out.append([float(x) for x in vec.tolist()])
-
-    return out
+    raise RuntimeError("No supported embeddings API found on genai client. Please check the client version.")
