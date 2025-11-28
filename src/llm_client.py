@@ -157,36 +157,54 @@ def _parse_embedding_response(resp):
 
 def get_embeddings(texts: List[str]) -> List[List[float]]:
     """
-    Get embeddings from Google Gemini (google-genai).
-    Compatible with all versions of google-genai.
-    Uses text-embedding-004 by default.
+    Return embeddings for a list of texts by calling Gemini embeddings via google.genai.
+    Tries multiple client methods for compatibility with different genai versions.
     """
     if texts is None:
         return []
-
     if isinstance(texts, str):
         texts = [texts]
+    if not isinstance(texts, list):
+        texts = list(texts)
 
     model = os.environ.get("GENAI_EMBEDDING_MODEL", "text-embedding-004")
+    client = _get_client()  # ensures _client is initialized (raises if API key missing)
 
+    # Try modern embeddings API: client.embeddings.create(...)
     try:
-        # universal embed endpoint
-        response = _client.embed_content(
-            model=model,
-            contents=texts
-        )
+        if hasattr(client, "embeddings") and callable(getattr(client.embeddings, "create", None)):
+            resp = client.embeddings.create(model=model, input=texts)
+            return _parse_embedding_response(resp)
     except Exception as e:
-        raise RuntimeError(f"Gemini embedding failed: {e}")
+        # continue to other fallbacks but keep a note
+        first_err = e
 
-    # google-genai returns:
-    # response.embeddings[i].values -> list of floats
-    out = []
+    # Try embed_content (some client versions expose embed_content)
+    try:
+        if hasattr(client, "embed_content") and callable(getattr(client, "embed_content", None)):
+            resp = client.embed_content(model=model, contents=texts)
+            return _parse_embedding_response(resp)
+    except Exception as e:
+        first_err = first_err if 'first_err' in locals() else e
 
-    # supports both batch + single embedding outputs
-    if hasattr(response, "embeddings"):
-        for emb in response.embeddings:
-            out.append(list(emb.values))
-    else:
-        raise RuntimeError("Invalid embedding response structure from Gemini")
+    # Try older models.embed or client.models.embed
+    try:
+        if hasattr(client, "models") and callable(getattr(client.models, "embed", None)):
+            resp = client.models.embed(model=model, input=texts)
+            return _parse_embedding_response(resp)
+    except Exception as e:
+        first_err = first_err if 'first_err' in locals() else e
 
-    return out
+    # Try very-old style: client.embed(...)
+    try:
+        if callable(getattr(client, "embed", None)):
+            resp = client.embed(model=model, input=texts)
+            return _parse_embedding_response(resp)
+    except Exception as e:
+        first_err = first_err if 'first_err' in locals() else e
+
+    # If nothing worked, raise a helpful error including the last exception
+    raise RuntimeError(
+        "No supported embeddings API found on genai client. Please check the client version and "
+        "available methods. Last error: " + (str(first_err) if 'first_err' in locals() else "unknown")
+    )
