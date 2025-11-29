@@ -2,6 +2,9 @@ services:
   - type: web
     name: medica
     runtime: python
-    plan: free 
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --workers 2 --timeout 0
+    plan: free
+    branch: main
+    buildCommand: >
+      bash -lc "pip install -r requirements.txt &&
+      if [ -f gemini_index.py ]; then python gemini_index.py; elif [ -f src/gemini_index.py ]; then python src/gemini_index.py; fi"
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 120
